@@ -9,6 +9,9 @@ import utils
 
 logger = logging.getLogger("Miyanji_Admin")
 
+# استیت‌های موقت ادمین برای ثبت علت رد فیش یا رد پروژه
+admin_states = {}
+
 def is_admin(user_id: int) -> bool:
     """بررسی دسترسی ادمین بودن کاربر"""
     admin_ids = getattr(config, 'ADMIN_IDS', [])
@@ -18,7 +21,7 @@ def is_admin(user_id: int) -> bool:
     return user_id in admin_ids
 
 def register_admin_handlers(bot: TeleBot):
-    """ثبت تمامی هندلرهای مربوط به پنل مدیریت و داوری سامانه می‌انجی"""
+    """ثبت تمامی هندلرهای مربوط به پنل مدیریت، تایید فیش‌ها، تحویل پروژه و داوری می‌انجی"""
 
     # ====================================================
     # ۱. ورود به پنل مدیریت
@@ -33,7 +36,7 @@ def register_admin_handlers(bot: TeleBot):
 
         admin_text = (
             "⚙️ **به اتاق فرمان مدیریت و داوری سامانه می‌انجی خوش آمدید.**\n\n"
-            "از بخش زیر می‌توانید آمار زنده، پرونده‌های داوری و وضعیت تراکنش‌ها را نظارت کنید:"
+            "از بخش زیر می‌توانید آمار زنده، پرونده‌های داوری، تایید فیش‌ها و تراکنش‌ها را نظارت کنید:"
         )
 
         bot.send_message(
@@ -79,7 +82,138 @@ def register_admin_handlers(bot: TeleBot):
         bot.send_message(call.message.chat.id, stats_text, parse_mode="Markdown")
 
     # ====================================================
-    # ۳. لیست پرونده‌های اختلاف و داوری
+    # ۳. تایید یا رد فیش‌های واریزی کارفرمایان توسط ادمین
+    # ====================================================
+    @bot.callback_query_handler(func=lambda call: call.data.startswith(("admin_approve_receipt_", "admin_reject_receipt_")))
+    def handle_receipt_approval(call: CallbackQuery):
+        if not is_admin(call.from_user.id):
+            bot.answer_callback_query(call.id, "❌ عدم دسترسی", show_alert=True)
+            return
+
+        is_approve = call.data.startswith("admin_approve_receipt_")
+        prefix = "admin_approve_receipt_" if is_approve else "admin_reject_receipt_"
+        cid = call.data.replace(prefix, "")
+
+        contract = db.get_contract(cid)
+        if not contract:
+            bot.answer_callback_query(call.id, "❌ معامله یافت نشد.", show_alert=True)
+            return
+
+        buyer_id = contract.get("buyer_id") or contract.get("employer_id")
+
+        if is_approve:
+            db.update_contract(cid, {"status": "in_progress", "payment_verified": True})
+            bot.answer_callback_query(call.id, "✅ فیش تایید گردید.")
+            
+            bot.edit_message_caption(
+                caption=f"{call.message.caption}\n\n✅ **این فیش واریزی توسط ادمین تایید شد.**\nپروژه وارد مرحله اجرا گردید.",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id
+            )
+
+            # اطلاع‌رسانی به خریدار و فروشنده
+            if buyer_id:
+                try:
+                    bot.send_message(buyer_id, f"✅ **فیش واریزی معامله `{cid}` تایید شد.**\nوجه در حساب امن می‌انجی بلوکه گردید و پروژه رسماً آغاز شد.")
+                except Exception:
+                    pass
+
+            seller_id = contract.get("seller_id") or contract.get("freelancer_id")
+            if seller_id:
+                try:
+                    bot.send_message(seller_id, f"🎉 **پرداخت معامله `{cid}` توسط کارفرما انجام و تایید شد.**\nمی‌توانید کار را آغاز نموده و پس از اتمام، خروجی را ارسال کنید.")
+                except Exception:
+                    pass
+        else:
+            # حالت رد فیش: دریافت علت رد از ادمین
+            admin_states[call.from_user.id] = {
+                "step": "WAITING_FOR_RECEIPT_REJECT_REASON",
+                "cid": cid,
+                "buyer_id": buyer_id,
+                "msg_id": call.message.message_id
+            }
+            bot.answer_callback_query(call.id)
+            bot.send_message(
+                call.message.chat.id,
+                f"❌ **لطفاً علت رد فیش واریزی معامله `{cid}` را ارسال کنید:**",
+                reply_markup=kb.get_cancel_keyboard() if hasattr(kb, 'get_cancel_keyboard') else None
+            )
+
+    # ====================================================
+    # ۴. تایید یا رد پروژه تحویل داده‌شده توسط ادمین / کارفرما
+    # ====================================================
+    @bot.callback_query_handler(func=lambda call: call.data.startswith(("admin_approve_project_", "admin_reject_project_")))
+    def handle_project_approval(call: CallbackQuery):
+        if not is_admin(call.from_user.id):
+            bot.answer_callback_query(call.id, "❌ عدم دسترسی", show_alert=True)
+            return
+
+        is_approve = call.data.startswith("admin_approve_project_")
+        prefix = "admin_approve_project_" if is_approve else "admin_reject_project_"
+        cid = call.data.replace(prefix, "")
+
+        contract = db.get_contract(cid)
+        if not contract:
+            bot.answer_callback_query(call.id, "❌ معامله یافت نشد.", show_alert=True)
+            return
+
+        seller_id = contract.get("seller_id") or contract.get("freelancer_id")
+        buyer_id = contract.get("buyer_id") or contract.get("employer_id")
+
+        if is_approve:
+            db.update_contract(cid, {"status": "completed"})
+            bot.answer_callback_query(call.id, "✅ پروژه تایید و تسویه گردید.")
+
+            amount = float(contract.get("amount", 0))
+            comm, net_amount = utils.calculate_commission(amount)
+
+            # واریز خودکار مبلغ خالص به کیف پول مجری
+            if seller_id:
+                db.update_wallet_balance(seller_id, net_amount, "deposit", f"تسویه معامله {cid}")
+                try:
+                    bot.send_message(
+                        seller_id, 
+                        f"🎉 **پروژه معامله `{cid}` تایید گردید!**\n\n"
+                        f"💰 مبلغ **{net_amount:,.0f} تومان** (پس از کسر {comm:,.0f} تومان کارمزد) به کیف پول شما واریز شد."
+                    )
+                except Exception:
+                    pass
+
+            if buyer_id:
+                try:
+                    bot.send_message(buyer_id, f"✅ **پروژه معامله `{cid}` نهایی شد و با موفقیت به پایان رسید.**\nبا تشکر از اعتماد شما به می‌انجی.")
+                except Exception:
+                    pass
+
+            bot.edit_message_text(
+                f"✅ **پروژه معامله `{cid}` تایید و تسویه حساب مالی انجام شد.**",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id
+            )
+        else:
+            # رد پروژه: محاسبه ویرایش رایگان باقی‌مانده و دریافت دلیل
+            free_edits_left = contract.get("free_edits_left", 3) - 1
+            if free_edits_left < 0:
+                free_edits_left = 0
+
+            db.update_contract(cid, {"free_edits_left": free_edits_left, "status": "in_progress"})
+
+            admin_states[call.from_user.id] = {
+                "step": "WAITING_FOR_PROJECT_REJECT_REASON",
+                "cid": cid,
+                "seller_id": seller_id,
+                "free_edits_left": free_edits_left
+            }
+            bot.answer_callback_query(call.id)
+            bot.send_message(
+                call.message.chat.id,
+                f"⚠️ **لطفاً علت رد/نیاز به اصلاح پروژه معامله `{cid}` را بنویسید:**\n"
+                f"(فرصت ویرایش مجانی باقی‌مانده مجری: {free_edits_left} بار)",
+                reply_markup=kb.get_cancel_keyboard() if hasattr(kb, 'get_cancel_keyboard') else None
+            )
+
+    # ====================================================
+    # ۵. لیست پرونده‌های اختلاف و داوری
     # ====================================================
     @bot.callback_query_handler(func=lambda call: call.data == "admin_disputes")
     def show_disputed_contracts(call: CallbackQuery):
@@ -123,7 +257,7 @@ def register_admin_handlers(bot: TeleBot):
             bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown", reply_markup=markup)
 
     # ====================================================
-    # ۴. صدور رای داوری
+    # ۶. صدور رای داوری
     # ====================================================
     @bot.callback_query_handler(func=lambda call: call.data.startswith("resolve_"))
     def handle_dispute_resolution(call: CallbackQuery):
@@ -131,8 +265,6 @@ def register_admin_handlers(bot: TeleBot):
             bot.answer_callback_query(call.id, "❌ عدم دسترسی", show_alert=True)
             return
 
-        # فرمت callback_data: resolve_{cid}_{winner} — چون خود cid می‌تواند خط‌تیره داشته باشد
-        # ولی هرگز آندرلاین ندارد (مثال DEV-2508-1234)، split از راست امن است.
         payload = call.data.replace("resolve_", "", 1)
         try:
             cid, winner = payload.rsplit("_", 1)
@@ -157,24 +289,31 @@ def register_admin_handlers(bot: TeleBot):
             parse_mode="Markdown"
         )
 
-        # اطلاع‌رسانی به هر دو طرف معامله از نتیجه داوری
+        # اطلاع‌رسانی به طرفین معامله همراه با آزادکننده/عودت مالی
         if contract:
             winner_fa = "کارفرما" if winner == "employer" else "مجری"
             buyer_id = contract.get("buyer_id") or contract.get("employer_id")
             seller_id = contract.get("seller_id") or contract.get("freelancer_id")
+            amount = float(contract.get("amount", 0))
+
+            if winner == "freelancer" and seller_id:
+                _, net_amt = utils.calculate_commission(amount)
+                db.update_wallet_balance(seller_id, net_amt, "deposit", f"رای داوری معامله {cid}")
+            elif winner == "employer" and buyer_id:
+                db.update_wallet_balance(buyer_id, amount, "deposit", f"عودت وجه رای داوری معامله {cid}")
+
             for uid in {u for u in (buyer_id, seller_id) if u}:
                 try:
                     bot.send_message(
                         uid,
-                        f"⚖️ **نتیجه داوری معامله `{cid}` مشخص شد.**\nرای نهایی به نفع **{winner_fa}** صادر گردید.",
+                        f"⚖️ **نتیجه داوری معامله `{cid}` مشخص شد.**\nرای نهایی به نفع **{winner_fa}** صادر گردید و تسویه مالی انجام شد.",
                         parse_mode="Markdown"
                     )
                 except Exception:
                     pass
 
     # ====================================================
-    # ۵. تایید یا رد درخواست‌های شارژ/برداشت کیف پول
-    # (رفع باگ: قبلاً هیچ راهی برای تسویه واقعی درخواست‌های کیف پول کاربران وجود نداشت)
+    # ۷. تایید یا رد درخواست‌های شارژ/برداشت کیف پول
     # ====================================================
     @bot.callback_query_handler(func=lambda call: call.data.startswith("wallet_ok_") or call.data.startswith("wallet_no_"))
     def handle_wallet_request_decision(call: CallbackQuery):
@@ -232,6 +371,43 @@ def register_admin_handlers(bot: TeleBot):
             )
         except Exception:
             pass
+
+    # ====================================================
+    # ۸. دریافت متون ورودی ادمین (علت رد فیش یا رد پروژه)
+    # ====================================================
+    @bot.message_handler(func=lambda msg: is_admin(msg.from_user.id) and msg.from_user.id in admin_states)
+    def handle_admin_text_input(message: Message):
+        user_id = message.from_user.id
+        state = admin_states.pop(user_id, {})
+        step = state.get("step")
+        cid = state.get("cid")
+        reason_text = message.text.strip()
+
+        if step == "WAITING_FOR_RECEIPT_REJECT_REASON":
+            buyer_id = state.get("buyer_id")
+            db.update_contract(cid, {"status": "receipt_rejected"})
+
+            bot.send_message(message.chat.id, f"✅ علت رد فیش ثبت شد و برای خریدار ارسال گردید.")
+
+            if buyer_id:
+                try:
+                    rejection_msg = utils.format_receipt_rejection_msg(cid, reason_text)
+                    bot.send_message(buyer_id, rejection_msg, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error(f"خطا در ارسال پیام رد فیش به خریدار: {e}")
+
+        elif step == "WAITING_FOR_PROJECT_REJECT_REASON":
+            seller_id = state.get("seller_id")
+            free_edits_left = state.get("free_edits_left", 3)
+
+            bot.send_message(message.chat.id, f"✅ علت رد/اصلاح پروژه ثبت و به مجری ابلاغ شد.")
+
+            if seller_id:
+                try:
+                    proj_msg = utils.format_project_rejection_msg(cid, reason_text, free_edits_left)
+                    bot.send_message(seller_id, proj_msg, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error(f"خطا در ارسال پیام رد پروژه به مجری: {e}")
 
 # ====================================================
 # کیبورد رزرو ادمین در صورت عدم وجود در keyboards.py

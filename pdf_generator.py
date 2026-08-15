@@ -19,15 +19,6 @@ logger = logging.getLogger("Miyanji_PDF")
 # ====================================================
 # ۰. بارگذاری فونت فارسی (Vazirmatn) و ابزار شکل‌دهی راست‌به‌چپ
 # ====================================================
-# نکته نصب: چون در محیط ساخت این پاسخ دسترسی شبکه نداشتم، باید خودتان
-# فایل فونت را یک‌بار در ریشه پروژه، داخل پوشه fonts/ قرار دهید:
-#
-#   mkdir -p fonts
-#   wget https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Regular.ttf -O fonts/Vazirmatn-Regular.ttf
-#   wget https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Bold.ttf -O fonts/Vazirmatn-Bold.ttf
-#
-# اگر این فایل‌ها نباشند، PDF همچنان تولید می‌شود ولی حروف فارسی به‌درستی
-# نمایش داده نخواهند شد (فونت پیش‌فرض Helvetica از یونیکد فارسی پشتیبانی نمی‌کند).
 
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 FONT_REGULAR_PATH = os.path.join(FONT_DIR, "Vazirmatn-Regular.ttf")
@@ -56,7 +47,6 @@ try:
 except Exception as e:
     logger.error(f"خطا در بارگذاری فونت فارسی: {e}")
 
-# ابزار شکل‌دهی حروف فارسی/عربی (اتصال حروف) و چیدمان راست‌به‌چپ
 try:
     import arabic_reshaper
     from bidi.algorithm import get_display
@@ -84,7 +74,7 @@ def rtl(text) -> str:
 
 
 def strip_markdown_bold(text: str) -> str:
-    """حذف نشانه‌های ** از متون کپی‌شده از utils.py (چون این‌ها برای تلگرام نوشته شده‌اند نه PDF)"""
+    """حذف نشانه‌های ** از متون کپی‌شده از utils.py"""
     if not text:
         return ""
     return re.sub(r"\*\*(.*?)\*\*", r"\1", text)
@@ -126,7 +116,7 @@ class NumberedCanvas(canvas.Canvas):
 
 
 def build_contract_pdf(contract_data: dict, buyer_user: dict = None, seller_user: dict = None) -> io.BytesIO:
-    """تولید سند رسمی PDF فارسی معامله همراه با اطلاعات طرفین، مراحل پرداخت و بندهای حقوقی اختصاصی حوزه"""
+    """تولید سند رسمی PDF فارسی معامله همراه با اطلاعات طرفین، شماره تماس پاسخگو، مراحل پرداخت و بندهای حقوقی"""
     buffer = io.BytesIO()
 
     doc = SimpleDocTemplate(
@@ -138,7 +128,7 @@ def build_contract_pdf(contract_data: dict, buyer_user: dict = None, seller_user
         bottomMargin=40
     )
 
-    # -------- استایل‌های پایه (راست‌چین، فونت فارسی) --------
+    # -------- استایل‌های پایه --------
     title_style = ParagraphStyle(
         'DocTitle',
         fontName=PERSIAN_FONT_BOLD,
@@ -217,7 +207,7 @@ def build_contract_pdf(contract_data: dict, buyer_user: dict = None, seller_user
 
     comm, net = utils.calculate_commission(c_amount)
 
-    # اگر اطلاعات کاربران پاس داده نشده باشد، خودمان از دیتابیس واکشی می‌کنیم
+    # واکشی خودکار اطلاعات کاربران در صورت عدم وجود
     if buyer_user is None or seller_user is None:
         try:
             import database as db
@@ -230,9 +220,9 @@ def build_contract_pdf(contract_data: dict, buyer_user: dict = None, seller_user
         except Exception as e:
             logger.warning(f"واکشی اطلاعات طرفین معامله ناموفق بود: {e}")
 
-    buyer_name = (buyer_user.get("first_name") if buyer_user else None) or "ثبت نشده"
+    buyer_name = (buyer_user.get("first_name") if buyer_user else None) or "نامشخص"
     buyer_phone = contract_data.get("buyer_phone") or (buyer_user.get("phone_number") if buyer_user else None) or "ثبت نشده"
-    seller_name = (seller_user.get("first_name") if seller_user else None) or "ثبت نشده"
+    seller_name = (seller_user.get("first_name") if seller_user else None) or "نامشخص"
     seller_phone = contract_data.get("seller_phone") or (seller_user.get("phone_number") if seller_user else None) or "ثبت نشده"
 
     status_fa_map = {
@@ -278,13 +268,13 @@ def build_contract_pdf(contract_data: dict, buyer_user: dict = None, seller_user
     elements.append(t)
     elements.append(Spacer(1, 12))
 
-    # ۳. جدول اطلاعات طرفین معامله
-    elements.append(P("مشخصات طرفین معامله:", head_style))
+    # ۳. جدول اطلاعات و شماره تماس پاسخگوی طرفین معامله
+    elements.append(P("مشخصات و شماره تماس پاسخگوی طرفین معامله:", head_style))
     elements.append(Spacer(1, 4))
     parties_rows = [
         [P("کارفرما (خریدار)", body_bold_style), P("مجری (فروشنده)", body_bold_style)],
-        [P(buyer_name, body_style), P(seller_name, body_style)],
-        [P(buyer_phone, body_style), P(seller_phone, body_style)],
+        [P(f"نام: {buyer_name}", body_style), P(f"نام: {seller_name}", body_style)],
+        [P(f"📞 شماره تماس پاسخگو: {buyer_phone}", body_style), P(f"📞 شماره تماس پاسخگو: {seller_phone}", body_style)],
     ]
     pt = Table(parties_rows, colWidths=[260, 260])
     pt.setStyle(TableStyle([
@@ -335,7 +325,7 @@ def build_contract_pdf(contract_data: dict, buyer_user: dict = None, seller_user
     elements.append(P(c_desc, body_style))
     elements.append(Spacer(1, 12))
 
-    # ۶. بندهای حقوقی اختصاصی حوزه کاری (همان متن استفاده‌شده در پیش‌نمایش تلگرام)
+    # ۶. بندهای حقوقی اختصاصی حوزه کاری
     cat_terms_raw = utils.CATEGORY_LEGAL_CLAUSES.get(c_category, utils.CATEGORY_LEGAL_CLAUSES["GEN"])
     cat_terms_clean = strip_markdown_bold(cat_terms_raw)
     for line in cat_terms_clean.split("\n"):

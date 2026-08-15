@@ -55,7 +55,7 @@ CATEGORY_LEGAL_CLAUSES = {
 }
 
 # ====================================================
-# ۳. توابع کمکی تبدیل اعداد و زمان
+# ۳. توابع کمکی تبدیل اعداد، زمان و فرمت‌دهی
 # ====================================================
 
 def fa_to_en_digits(text: str) -> str:
@@ -194,8 +194,16 @@ def calculate_commission(amount: float) -> Tuple[float, float]:
     net_amount = amount - commission
     return commission, net_amount
 
+# ====================================================
+# ۴. توابع ساخت لینک سریع، نمایش سند و پنل شیشه‌ای
+# ====================================================
+
+def generate_quick_contract_link(bot_username: str, contract_id: str) -> str:
+    """تولید لینک اختصاصی امضای سریع قرارداد (Deep Link)"""
+    return f"https://t.me/{bot_username}?start=contract_{contract_id}"
+
 def generate_draft_preview_text(draft_data: Dict[str, Any]) -> str:
-    """تولید متن شیک پیش‌نمایش پیش‌نویس معامله جهت نمایش و ویرایش"""
+    """تولید متن پیش‌نمایش پیش‌نویس معامله جهت نمایش و ویرایش"""
     title = draft_data.get("title", "ثبت نشده")
     amount = float(draft_data.get("amount", 0))
     deadline = draft_data.get("deadline", 1)
@@ -221,7 +229,7 @@ def generate_draft_preview_text(draft_data: Dict[str, Any]) -> str:
     return text
 
 def generate_contract_text(contract: Dict[str, Any], buyer_user: Dict[str, Any] = None, seller_user: Dict[str, Any] = None) -> str:
-    """تولید متن رسمی، کامل و حقوقی قرارداد همراه با شروط واسطه‌گری و داوری آنلاین"""
+    """تولید متن رسمی قرارداد همراه با وضعیت امضاها، شماره تماس پاسخگو، سقف ویرایش رایگان و پنل شیشه‌ای"""
     cid = contract.get("contract_id") or contract.get("id", "---")
     category = contract.get("category", "GEN")
     title = contract.get("title", "بدون عنوان")
@@ -229,22 +237,32 @@ def generate_contract_text(contract: Dict[str, Any], buyer_user: Dict[str, Any] 
     deadline = contract.get("deadline", 1)
     desc = contract.get("description", "بدون توضیحات تکمیلی")
     milestones = contract.get("milestones", [])
+    
+    is_signed = contract.get("signed_by_second_party", False)
+    sign_status = "✅ امضا شده توسط هر دو طرف" if is_signed else "⏳ در انتظار امضای طرف دوم"
+    free_edits = contract.get("free_edits_left", 3)
 
     comm, net = calculate_commission(amount)
 
-    buyer_phone = contract.get("buyer_phone") or (buyer_user.get("phone_number") if buyer_user else "ثبت نشده")
-    seller_phone = contract.get("seller_phone") or (seller_user.get("phone_number") if seller_user else "ثبت نشده")
+    # استخراج هوشمند شماره تماس پاسخگوی طرفین
+    buyer_phone = contract.get("buyer_phone") or (buyer_user.get("phone_number") if buyer_user else None) or "ثبت نشده"
+    seller_phone = contract.get("seller_phone") or (seller_user.get("phone_number") if seller_user else None) or "ثبت نشده"
 
     text = (
         f"🏛 **سند رسمی معامله و واسطه‌گری می‌انجی**\n"
-        f"🔖 **شناسه اختصاصی بایگانی:** `{cid}`\n\n"
+        f"🔖 **شناسه اختصاصی بایگانی:** `{cid}`\n"
+        f"✒️ **وضعیت امضا:** {sign_status}\n"
+        f"🔄 **ویرایش رایگان باقی‌مانده:** {free_edits} بار\n"
+        "───────────────────────\n"
         f"📌 **عنوان معامله:** {title}\n"
         f"💵 **مبلغ کل معامله:** {amount:,.0f} تومان\n"
         f"💳 **کارمزد سامانه ({getattr(config, 'COMMISSION_PERCENT', 2.5)}%):** {comm:,.0f} تومان\n"
         f"🎯 **مبلغ خالص دریافتی مجری:** {net:,.0f} تومان\n"
         f"⏳ **مهلت تحویل پروژه:** {deadline} روز\n\n"
-        f"👤 **کارفرما (خریدار):** `{buyer_phone}`\n"
-        f"🛠 **مجری (فروشنده):** `{seller_phone}`\n\n"
+        f"👤 **کارفرما (خریدار):**\n"
+        f"📞 شماره پاسخگو: `{buyer_phone}`\n\n"
+        f"🛠 **مجری (فروشنده):**\n"
+        f"📞 شماره پاسخگو: `{seller_phone}`\n\n"
     )
 
     if milestones:
@@ -266,6 +284,23 @@ def generate_contract_text(contract: Dict[str, Any], buyer_user: Dict[str, Any] 
     )
 
     return text
+
+def format_receipt_rejection_msg(contract_id: str, reason: str) -> str:
+    """قالب‌بندی پیام اعلام رد فیش واریزی برای کارفرما"""
+    return (
+        f"❌ **فیش واریزی شما برای قرارداد `{contract_id}` تایید نشد.**\n\n"
+        f"📌 **علت رد فیش:**\n{reason}\n\n"
+        "💡 لطفاً فیش صحیح را از طریق پنل شیشه‌ای قرارداد مجدداً ارسال کنید."
+    )
+
+def format_project_rejection_msg(contract_id: str, reason: str, free_edits_left: int) -> str:
+    """قالب‌بندی پیام رد پروژه/پایان کار توسط ادمین به همراه تعداد ویرایش مجانی باقی‌مانده"""
+    return (
+        f"⚠️ **پروژه تحویلی برای قرارداد `{contract_id}` رد شد.**\n\n"
+        f"📌 **دلیل رد/نیاز به اصلاح:**\n{reason}\n\n"
+        f"🔄 **تعداد ویرایش رایگان باقی‌مانده:** {free_edits_left} بار\n"
+        "لطفاً اصلاحات لازم را انجام داده و مجدداً فایل/پروژه را ارسال کنید."
+    )
 
 def convert_to_jalali(date_str: str) -> str:
     """تبدیل تاریخ به فرمت مناسب"""

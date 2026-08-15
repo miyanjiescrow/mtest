@@ -122,11 +122,7 @@ def get_wallet_admin_approval_inline(request_type: str, user_id: int, amount: fl
     return markup
 
 def get_contract_action_keyboard(contract_id: str, user_role: str, status: str, has_milestones: bool = False) -> InlineKeyboardMarkup:
-    """
-    دکمه‌های مدیریتی قرارداد بسته به وضعیت فعلی معامله و نقش کاربر.
-    (رفع‌شده: قبلاً برای وضعیت‌های active/delivered هیچ دکمه‌ای نمایش داده نمی‌شد
-    و در نتیجه هیچ راهی برای ادامهٔ معامله پس از امضا وجود نداشت)
-    """
+    """دکمه‌های مدیریتی قرارداد بسته به وضعیت فعلی معامله و نقش کاربر"""
     markup = InlineKeyboardMarkup(row_width=2)
 
     if status == "pending_approval":
@@ -137,11 +133,18 @@ def get_contract_action_keyboard(contract_id: str, user_role: str, status: str, 
         markup.add(InlineKeyboardButton("✍️ تایید مبلغ و امضا", callback_data=f"sign_contract_{contract_id}"))
         markup.add(InlineKeyboardButton("🔄 پیشنهاد مبلغ دیگر", callback_data=f"bargain_{contract_id}"))
 
-    if status == "active" and user_role == "freelancer":
-        markup.add(InlineKeyboardButton("🚀 تحویل کار", callback_data=f"deliver_{contract_id}"))
+    # واریز فیش وجه امانی توسط کارفرما
+    if status == "awaiting_payment" and user_role == "employer":
+        markup.add(InlineKeyboardButton("💳 ارسال فیش واریزی", callback_data=f"upload_receipt_{contract_id}"))
 
+    # تحویل پروژه توسط مجری
+    if status == "active" and user_role == "freelancer":
+        markup.add(InlineKeyboardButton("🚀 تحویل پروژه / ارسال فایل", callback_data=f"deliver_{contract_id}"))
+
+    # تایید یا رد پروژه تحویلی توسط کارفرما
     if status == "delivered" and user_role == "employer":
-        markup.add(InlineKeyboardButton("✅ تایید نهایی و آزادسازی وجه", callback_data=f"final_confirm_{contract_id}"))
+        markup.add(InlineKeyboardButton("✅ تایید نهایی پروژه و آزادسازی وجه", callback_data=f"final_confirm_{contract_id}"))
+        markup.add(InlineKeyboardButton("⚠️ عدم تایید و درخواست اصلاح پروژه", callback_data=f"reject_project_{contract_id}"))
 
     if has_milestones:
         markup.add(InlineKeyboardButton("📊 مدیریت مراحل پرداخت", callback_data=f"manage_milestones_{contract_id}"))
@@ -150,6 +153,28 @@ def get_contract_action_keyboard(contract_id: str, user_role: str, status: str, 
         markup.add(InlineKeyboardButton("❌ لغو معامله", callback_data=f"cancel_contract_{contract_id}"))
 
     markup.add(InlineKeyboardButton("📥 دریافت فایل PDF", callback_data=f"get_pdf_{contract_id}"))
+    return markup
+
+# ====================================================
+# دکمه‌های جدید: مدیریت فیش واریزی و بررسی پروژه (ادمین/کارفرما)
+# ====================================================
+
+def get_receipt_admin_approval_inline(contract_id: str, buyer_id: int) -> InlineKeyboardMarkup:
+    """پنل مدیریت جهت تایید یا رد فیش واریزی توسط ادمین"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("✅ تایید فیش و فعالسازی معامله", callback_data=f"receipt_approve_{contract_id}_{buyer_id}"),
+        InlineKeyboardButton("❌ رد فیش واریزی", callback_data=f"receipt_reject_{contract_id}_{buyer_id}")
+    )
+    return markup
+
+def get_project_admin_review_inline(contract_id: str, seller_id: int) -> InlineKeyboardMarkup:
+    """پنل مدیریت جهت بررسی فایل‌های پروژه تحویلی توسط ادمین (در صورت نیاز)"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("✅ تایید کیفی پروژه", callback_data=f"project_approve_{contract_id}_{seller_id}"),
+        InlineKeyboardButton("⚠️ رد پروژه و اعلام علت", callback_data=f"project_reject_reason_{contract_id}_{seller_id}")
+    )
     return markup
 
 def get_more_contracts_inline(next_offset: int) -> InlineKeyboardMarkup:
