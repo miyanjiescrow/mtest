@@ -1,0 +1,9 @@
+jdatetime
+pyTelegramBotAPI
+supabase
+reportlab
+python-dotenv
+flask
+gunicorn
+arabic-reshaper
+python-bidi

@@ -1,0 +1,174 @@
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+
+def get_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    """منوی اصلی ربات با پوشش کامل تمام قابلیت‌ها"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(
+        KeyboardButton("🤝 ایجاد معامله جدید"),
+        KeyboardButton("📜 معاملات من")
+    )
+    markup.add(
+        KeyboardButton("💰 کیف پول و اعتبار"),
+        KeyboardButton("📞 پشتیبانی و ارتباط با ما")
+    )
+    markup.add(
+        KeyboardButton("⚖️ قوانین و راهنمای حقوقی")
+    )
+    if is_admin:
+        markup.add(KeyboardButton("👨‍💼 پنل مدیریت"))
+    return markup
+
+def get_role_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد انتخاب نقش کاربر در معامله"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("👤 کارفرما (خریدار)"), KeyboardButton("🛠 مجری (فروشنده/پیمانکار)"))
+    markup.add(KeyboardButton("❌ انصراف و بازگشت به منو"))
+    return markup
+
+def get_category_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد انتخاب نوع و دسته‌بندی قرارداد"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=2)
+    markup.add(
+        KeyboardButton("💻 برنامه‌نویسی و IT"),
+        KeyboardButton("🎨 طراحی و گرافیک"),
+        KeyboardButton("🎓 دانشجویی و پژوهشی"),
+        KeyboardButton("📚 آموزشی و تدریس"),
+        KeyboardButton("📑 عمومی و خدمات")
+    )
+    markup.add(KeyboardButton("❌ انصراف و بازگشت به منو"))
+    return markup
+
+def get_cancel_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد انصراف کلی"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("❌ انصراف و بازگشت به منو"))
+    return markup
+
+def get_contract_preview_inline(draft_id: str = "draft") -> InlineKeyboardMarkup:
+    """پنل شیشه‌ای پیش‌نمایش، ویرایش و تایید نهایی پیش از امضا"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("✅ تایید و مرحله امضا", callback_data=f"confirm_draft_{draft_id}"),
+        InlineKeyboardButton("✏️ ویرایش پیش‌نویس", callback_data=f"edit_draft_{draft_id}")
+    )
+    markup.add(
+        InlineKeyboardButton("❌ لغو پیش‌نویس", callback_data="cancel_draft")
+    )
+    return markup
+
+def get_draft_edit_inline(draft_id: str = "draft") -> InlineKeyboardMarkup:
+    """منوی شیشه‌ای انتخاب بخش برای ویرایش مجزا"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("✏️ ویرایش عنوان", callback_data=f"edit_field_title_{draft_id}"),
+        InlineKeyboardButton("💰 ویرایش مبلغ", callback_data=f"edit_field_amount_{draft_id}")
+    )
+    markup.add(
+        InlineKeyboardButton("⏱ ویرایش مهلت تحویل", callback_data=f"edit_field_deadline_{draft_id}"),
+        InlineKeyboardButton("📝 ویرایش شرح تعهدات", callback_data=f"edit_field_desc_{draft_id}")
+    )
+    markup.add(
+        InlineKeyboardButton("🔙 بازگشت به پیش‌نمایش قرارداد", callback_data=f"back_to_preview_{draft_id}")
+    )
+    return markup
+
+def get_phone_sign_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد ارسال شماره جهت امضای الکترونیک"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("📱 ارسال شماره جهت ثبت امضا", request_contact=True))
+    markup.add(KeyboardButton("❌ انصراف و بازگشت به منو"))
+    return markup
+
+def get_skip_work_phone_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد ثبت شماره کاری اختیاری"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("⏭ رد کردن و استفاده از شماره تلگرام"))
+    markup.add(KeyboardButton("❌ انصراف و بازگشت به منو"))
+    return markup
+
+def get_wallet_inline() -> InlineKeyboardMarkup:
+    """دکمه‌های شیشه‌ای مدیریت کیف پول"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("💳 شارژ حساب", callback_data="deposit_wallet"),
+        InlineKeyboardButton("🏧 درخواست برداشت", callback_data="withdraw_wallet")
+    )
+    return markup
+
+def get_support_inline() -> InlineKeyboardMarkup:
+    """دکمه‌های شیشه‌ای بخش پشتیبانی و سوالات متداول"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("❓ سوالات متداول (FAQ)", callback_data="faq_info"),
+        InlineKeyboardButton("⚖️ درخواست داوری برای یک معامله", callback_data="request_dispute"),
+        InlineKeyboardButton("💬 ارتباط مستقیم با پشتیبانی", url="https://t.me/Miyanji_Support")
+    )
+    return markup
+
+def get_wallet_amount_cancel_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد لغو حین وارد کردن مبلغ شارژ/برداشت"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("❌ انصراف و بازگشت به منو"))
+    return markup
+
+def get_wallet_admin_approval_inline(request_type: str, user_id: int, amount: float) -> InlineKeyboardMarkup:
+    """دکمه شیشه‌ای تایید/رد درخواست شارژ یا برداشت کیف پول برای ادمین"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    amt_int = int(amount)
+    markup.add(
+        InlineKeyboardButton("✅ تایید", callback_data=f"wallet_ok_{request_type}_{user_id}_{amt_int}"),
+        InlineKeyboardButton("❌ رد درخواست", callback_data=f"wallet_no_{request_type}_{user_id}_{amt_int}")
+    )
+    return markup
+
+def get_contract_action_keyboard(contract_id: str, user_role: str, status: str, has_milestones: bool = False) -> InlineKeyboardMarkup:
+    """
+    دکمه‌های مدیریتی قرارداد بسته به وضعیت فعلی معامله و نقش کاربر.
+    (رفع‌شده: قبلاً برای وضعیت‌های active/delivered هیچ دکمه‌ای نمایش داده نمی‌شد
+    و در نتیجه هیچ راهی برای ادامهٔ معامله پس از امضا وجود نداشت)
+    """
+    markup = InlineKeyboardMarkup(row_width=2)
+
+    if status == "pending_approval":
+        markup.add(InlineKeyboardButton("✍️ امضا و تایید قرارداد", callback_data=f"sign_contract_{contract_id}"))
+        markup.add(InlineKeyboardButton("🔄 پیشنهاد مبلغ جدید", callback_data=f"bargain_{contract_id}"))
+
+    if status == "bargaining":
+        markup.add(InlineKeyboardButton("✍️ تایید مبلغ و امضا", callback_data=f"sign_contract_{contract_id}"))
+        markup.add(InlineKeyboardButton("🔄 پیشنهاد مبلغ دیگر", callback_data=f"bargain_{contract_id}"))
+
+    if status == "active" and user_role == "freelancer":
+        markup.add(InlineKeyboardButton("🚀 تحویل کار", callback_data=f"deliver_{contract_id}"))
+
+    if status == "delivered" and user_role == "employer":
+        markup.add(InlineKeyboardButton("✅ تایید نهایی و آزادسازی وجه", callback_data=f"final_confirm_{contract_id}"))
+
+    if has_milestones:
+        markup.add(InlineKeyboardButton("📊 مدیریت مراحل پرداخت", callback_data=f"manage_milestones_{contract_id}"))
+
+    if status not in ["completed", "cancelled", "resolved_employer", "resolved_freelancer"]:
+        markup.add(InlineKeyboardButton("❌ لغو معامله", callback_data=f"cancel_contract_{contract_id}"))
+
+    markup.add(InlineKeyboardButton("📥 دریافت فایل PDF", callback_data=f"get_pdf_{contract_id}"))
+    return markup
+
+def get_milestones_inline(contract_id: str, milestones: list, is_employer: bool) -> InlineKeyboardMarkup:
+    """دکمه‌های آزادسازی مراحل پرداخت"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    for idx, ms in enumerate(milestones):
+        title = ms.get("title", f"مرحله {idx+1}")
+        amt = float(ms.get("amount", 0))
+        st = ms.get("status", "pending")
+        
+        if st == "released":
+            btn_text = f"✅ {title} ({amt:,.0f} تومان) - آزاد شده"
+            markup.add(InlineKeyboardButton(btn_text, callback_data="none"))
+        else:
+            if is_employer:
+                btn_text = f"🔓 آزادسازی {title} ({amt:,.0f} تومان)"
+                markup.add(InlineKeyboardButton(btn_text, callback_data=f"release_ms_{contract_id}_{idx}"))
+            else:
+                btn_text = f"⏳ {title} ({amt:,.0f} تومان) - در انتظار کارفرما"
+                markup.add(InlineKeyboardButton(btn_text, callback_data="none"))
+                
+    return markup
