@@ -1,4 +1,5 @@
 import io
+import re
 import logging
 from telebot import TeleBot
 from telebot.types import Message, CallbackQuery
@@ -10,6 +11,8 @@ import utils
 import pdf_generator
 
 logger = logging.getLogger("Miyanji_User")
+
+CONTRACT_ID_PATTERN = re.compile(r"^[A-Za-z]{2,5}-\d{3,4}-\d{3,4}$")
 
 
 # ====================================================
@@ -68,6 +71,35 @@ def send_contract_pdf_to_parties(bot: TeleBot, contract: dict):
             )
         except Exception as e:
             logger.warning(f"ارسال خودکار PDF به {recipient_id} ناموفق بود: {e}")
+
+
+def build_draft_preview_text(draft: dict) -> str:
+    """
+    تولید متن یکسان پیش‌نمایش پیش‌نویس معامله؛ هم در نمایش اولیه بعد از پارس فرم
+    و هم بعد از ویرایش هر فیلد (بخش ویرایش پیش‌نویس) از همین تابع استفاده می‌شود
+    تا دو تکه کد مجزا و ناهماهنگ نداشته باشیم.
+    """
+    role = draft.get("role", "employer")
+    role_str = "کارفرما" if role == "employer" else "مجری"
+    category = draft.get("category", "GEN")
+
+    ms_text = ""
+    if draft.get("milestones"):
+        ms_text = "\n\n🔹 **مراحل پرداخت:**\n" + "\n".join(
+            [f"• {m['title']}: {float(m['amount']):,.0f} تومان" for m in draft["milestones"]]
+        )
+
+    return (
+        "🧐 **پیش‌نمایش و بررسی نهایی معامله**\n\n"
+        f"👤 **نقش شما:** {role_str}\n"
+        f"📂 **دسته‌بندی:** `{category}`\n"
+        f"📌 **عنوان:** {draft.get('title')}\n"
+        f"💵 **مبلغ کل:** {float(draft.get('amount', 0)):,.0f} تومان\n"
+        f"⏳ **مهلت تحویل:** {draft.get('deadline', 1)} روز\n"
+        f"{ms_text}\n\n"
+        f"📝 **تعهدات:**\n{draft.get('description', 'ثبت نشده')}\n\n"
+        "آیا اطلاعات فوق مورد تایید است؟"
+    )
 
 
 def register_user_handlers(bot: TeleBot):
@@ -264,22 +296,7 @@ def register_user_handlers(bot: TeleBot):
 
         db.set_user_state(user_id, "WAITING_PREVIEW_CONFIRM", {"contract_draft": parsed})
 
-        role_str = "کارفرما" if parsed["role"] == "employer" else "مجری"
-        ms_text = ""
-        if parsed.get("milestones"):
-            ms_text = "\n\n🔹 **مراحل پرداخت:**\n" + "\n".join([f"• {m['title']}: {float(m['amount']):,.0f} تومان" for m in parsed["milestones"]])
-
-        preview_text = (
-            "🧐 **پیش‌نمایش و بررسی نهایی معامله**\n\n"
-            f"👤 **نقش شما:** {role_str}\n"
-            f"📂 **دسته‌بندی:** `{parsed['category']}`\n"
-            f"📌 **عنوان:** {parsed.get('title')}\n"
-            f"💵 **مبلغ کل:** {float(parsed.get('amount', 0)):,.0f} تومان\n"
-            f"⏳ **مهلت تحویل:** {parsed.get('deadline', 1)} روز\n"
-            f"{ms_text}\n\n"
-            f"📝 **تعهدات:**\n{parsed.get('description', 'ثبت نشده')}\n\n"
-            "آیا اطلاعات فوق مورد تایید است؟"
-        )
+        preview_text = build_draft_preview_text(parsed)
 
         bot.send_message(
             message.chat.id,
@@ -325,6 +342,123 @@ def register_user_handlers(bot: TeleBot):
             call.message.chat.id,
             "❌ پیش‌نویس معامله لغو شد. به منوی اصلی بازگشتید.",
             reply_markup=kb.get_main_menu(is_admin)
+        )
+
+    # ====================================================
+    # ۶.۵ ویرایش پیش‌نویس پیش از امضا (قبلاً فقط دکمه بود، هیچ کدی پشتش نبود
+    #     و با کلیک روی «ویرایش پیش‌نویس» فقط پیام «به‌زودی فعال می‌شود» دیده می‌شد)
+    # ====================================================
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_draft_"))
+    def handle_edit_draft_menu(call: CallbackQuery):
+        user_id = call.from_user.id
+        _, data = db.get_user_state(user_id)
+        draft = data.get("contract_draft") if isinstance(data, dict) else None
+
+        if not draft:
+            bot.answer_callback_query(call.id, "⚠️ پیش‌نویس فعالی یافت نشد.", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(
+            "✏️ **کدام بخش از پیش‌نویس را می‌خواهید ویرایش کنید؟**",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=kb.get_draft_edit_inline(),
+            parse_mode="Markdown"
+        )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_field_"))
+    def handle_edit_field_start(call: CallbackQuery):
+        user_id = call.from_user.id
+        # فرمت callback_data: edit_field_{field}_{draft_id} → فیلد همیشه اولین تکه بعد از پیشوند است
+        field = call.data.replace("edit_field_", "", 1).split("_")[0]
+
+        _, data = db.get_user_state(user_id)
+        draft = data.get("contract_draft") if isinstance(data, dict) else None
+        if not draft:
+            bot.answer_callback_query(call.id, "⚠️ پیش‌نویس فعالی یافت نشد.", show_alert=True)
+            return
+
+        db.set_user_state(user_id, "WAITING_FIELD_EDIT", {"editing_field": field, "contract_draft": draft})
+
+        field_names = {
+            "title": "عنوان جدید معامله",
+            "amount": "مبلغ جدید (به تومان)",
+            "deadline": "مهلت جدید تحویل (به روز)",
+            "desc": "شرح جدید تعهدات",
+        }
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            f"📝 لطفاً **{field_names.get(field, 'مقدار جدید')}** را ارسال کنید:",
+            parse_mode="Markdown",
+            reply_markup=kb.get_cancel_keyboard()
+        )
+
+    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_FIELD_EDIT")
+    def process_field_edit(message: Message):
+        user_id = message.from_user.id
+        _, data = db.get_user_state(user_id)
+        field = data.get("editing_field") if isinstance(data, dict) else None
+        draft = data.get("contract_draft", {}) if isinstance(data, dict) else {}
+
+        if not field or not draft:
+            db.clear_user_state(user_id)
+            is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
+            bot.send_message(message.chat.id, "⚠️ خطایی رخ داد، لطفاً دوباره از «ایجاد معامله جدید» شروع کنید.", reply_markup=kb.get_main_menu(is_admin))
+            return
+
+        text = message.text.strip()
+        clean_input = utils.fa_to_en_digits(text)
+
+        if field == "title":
+            draft["title"] = text
+        elif field == "amount":
+            try:
+                new_amount = float(clean_input.replace(",", ""))
+                if new_amount <= 0:
+                    raise ValueError
+                draft["amount"] = new_amount
+            except ValueError:
+                bot.send_message(message.chat.id, "⚠️ لطفاً مبلغ را به‌صورت عددی و مثبت وارد کنید.")
+                return
+        elif field == "deadline":
+            if clean_input.isdigit() and int(clean_input) > 0:
+                draft["deadline"] = int(clean_input)
+            else:
+                bot.send_message(message.chat.id, "⚠️ لطفاً مهلت تحویل را به عدد (روز) وارد کنید.")
+                return
+        elif field == "desc":
+            draft["description"] = text
+
+        db.set_user_state(user_id, "WAITING_PREVIEW_CONFIRM", {"contract_draft": draft})
+
+        bot.send_message(message.chat.id, "✅ تغییرات با موفقیت اعمال گردید.")
+        bot.send_message(
+            message.chat.id,
+            build_draft_preview_text(draft),
+            parse_mode="Markdown",
+            reply_markup=kb.get_contract_preview_inline()
+        )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("back_to_preview_"))
+    def handle_back_to_preview(call: CallbackQuery):
+        user_id = call.from_user.id
+        _, data = db.get_user_state(user_id)
+        draft = data.get("contract_draft") if isinstance(data, dict) else None
+
+        if not draft:
+            bot.answer_callback_query(call.id, "⚠️ پیش‌نویس فعالی یافت نشد.", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(
+            build_draft_preview_text(draft),
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=kb.get_contract_preview_inline(),
+            parse_mode="Markdown"
         )
 
     # ====================================================
@@ -440,8 +574,48 @@ def register_user_handlers(bot: TeleBot):
         bot.send_message(message.chat.id, final_msg, parse_mode="Markdown", reply_markup=kb.get_main_menu(is_admin))
 
     # ====================================================
-    # ۹. معاملات من
+    # ۹. معاملات من (با صفحه‌بندی — قبلاً همیشه فقط ۵ معامله اول نمایش داده می‌شد
+    #     و هیچ راهی برای دیدن باقی معاملات کاربر وجود نداشت)
     # ====================================================
+    PAGE_SIZE = 5
+
+    def render_contract_card(chat_id: int, user_id: int, c: dict):
+        cid = c.get("contract_id") or c.get("id", "---")
+        title = c.get("title", "بدون عنوان")
+        status = c.get("status", "نامشخص")
+        amount = float(c.get("amount", 0))
+
+        role = "کارفرما" if c.get("employer_id") == user_id or c.get("buyer_id") == user_id else "مجری"
+        has_ms = len(c.get("milestones", []) or []) > 0
+
+        text = (
+            f"📄 **معامله `{cid}`**\n"
+            f"📌 عنوان: {title}\n"
+            f"👤 نقش شما: {role}\n"
+            f"💵 مبلغ: {amount:,.0f} تومان\n"
+            f"📊 وضعیت: `{status}`"
+        )
+
+        bot.send_message(
+            chat_id,
+            text,
+            parse_mode="Markdown",
+            reply_markup=kb.get_contract_action_keyboard(cid, "employer" if role == "کارفرما" else "freelancer", status, has_ms)
+        )
+
+    def send_contracts_page(chat_id: int, user_id: int, contracts: list, offset: int):
+        page = contracts[offset:offset + PAGE_SIZE]
+        for c in page:
+            render_contract_card(chat_id, user_id, c)
+
+        remaining = len(contracts) - (offset + PAGE_SIZE)
+        if remaining > 0:
+            bot.send_message(
+                chat_id,
+                f"📜 {remaining} معامله دیگر دارید.",
+                reply_markup=kb.get_more_contracts_inline(offset + PAGE_SIZE)
+            )
+
     @bot.message_handler(func=lambda msg: msg.text == "📜 معاملات من")
     def show_my_contracts(message: Message):
         user_id = message.from_user.id
@@ -451,29 +625,19 @@ def register_user_handlers(bot: TeleBot):
             bot.send_message(message.chat.id, "📜 شما هنوز هیچ معامله‌ای ثبت نکرده‌اید.")
             return
 
-        for c in contracts[:5]:
-            cid = c.get("contract_id") or c.get("id", "---")
-            title = c.get("title", "بدون عنوان")
-            status = c.get("status", "نامشخص")
-            amount = float(c.get("amount", 0))
+        send_contracts_page(message.chat.id, user_id, contracts, 0)
 
-            role = "کارفرما" if c.get("employer_id") == user_id or c.get("buyer_id") == user_id else "مجری"
-            has_ms = len(c.get("milestones", []) or []) > 0
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("contracts_more_"))
+    def handle_contracts_more(call: CallbackQuery):
+        user_id = call.from_user.id
+        try:
+            offset = int(call.data.replace("contracts_more_", "", 1))
+        except ValueError:
+            offset = 0
 
-            text = (
-                f"📄 **معامله `{cid}`**\n"
-                f"📌 عنوان: {title}\n"
-                f"👤 نقش شما: {role}\n"
-                f"💵 مبلغ: {amount:,.0f} تومان\n"
-                f"📊 وضعیت: `{status}`"
-            )
-
-            bot.send_message(
-                message.chat.id,
-                text,
-                parse_mode="Markdown",
-                reply_markup=kb.get_contract_action_keyboard(cid, "employer" if role == "کارفرما" else "freelancer", status, has_ms)
-            )
+        contracts = db.get_user_contracts(user_id)
+        bot.answer_callback_query(call.id)
+        send_contracts_page(call.message.chat.id, user_id, contracts, offset)
 
     # ====================================================
     # ۱۰. کیف پول
@@ -985,7 +1149,47 @@ def register_user_handlers(bot: TeleBot):
                 "۳. چگونه اختلاف حل می‌شود؟ با بررسی مستندات چت و توضیحات فایل‌ها توسط تیم داوری."
             )
         else:
-            # رفع باگ: قبلاً هر کالبک ناشناخته‌ای (مثل دکمه‌های ویرایش پیش‌نویس یا
-            # مدیریت مراحل پرداخت) کاملاً بی‌صدا نادیده گرفته می‌شد؛ حالا حداقل
-            # به کاربر اطلاع داده می‌شود که این بخش هنوز فعال نیست.
+            # این حالت دیگر برای دکمه‌های شناخته‌شده رخ نمی‌دهد (همه دکمه‌های واقعی ربات
+            # هندلر اختصاصی دارند)؛ فقط یک شبکه ایمنی برای callback_data ناشناخته است.
             bot.answer_callback_query(call.id, "⏳ این بخش به‌زودی فعال می‌شود.", show_alert=False)
+
+    # ====================================================
+    # ۱۵. جست‌وجوی سریع معامله با شناسه + پاسخ پیش‌فرض به پیام‌های نامفهوم
+    #     (قبلاً اگر متن کاربر با هیچ دکمه یا مرحله‌ای مطابقت نداشت، ربات کاملاً
+    #     ساکت می‌ماند و کاربر فکر می‌کرد چیزی خراب شده. این هندلر همیشه باید
+    #     آخرین message_handler ثبت‌شده باشد تا هیچ‌کدام از مراحل بالا را قاپ نزند.)
+    # ====================================================
+    @bot.message_handler(func=lambda msg: True)
+    def handle_fallback_text(message: Message):
+        user_id = message.from_user.id
+        text = (message.text or "").strip()
+        is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
+
+        # اگر متن دقیقاً شبیه شناسه یک معامله بود (مثل DEV-2508-1234)،
+        # مستقیم کارت همان معامله را نشان بده — نیازی به رفتن به «معاملات من» نیست
+        candidate = utils.fa_to_en_digits(text).upper()
+        if CONTRACT_ID_PATTERN.match(candidate):
+            contract = db.get_contract(candidate)
+            if contract:
+                cid = contract.get("contract_id") or contract.get("id", candidate)
+                role = "employer" if contract.get("buyer_id") == user_id or contract.get("employer_id") == user_id else "freelancer"
+                bot.send_message(
+                    message.chat.id,
+                    utils.generate_contract_text(contract),
+                    parse_mode="Markdown",
+                    reply_markup=kb.get_contract_action_keyboard(
+                        cid, role, contract.get("status", "draft"), bool(contract.get("milestones"))
+                    )
+                )
+                return
+            bot.send_message(message.chat.id, "❌ معامله‌ای با این شناسه یافت نشد.")
+            return
+
+        bot.send_message(
+            message.chat.id,
+            "🤔 متوجه پیام شما نشدم.\n"
+            "لطفاً از دکمه‌های منوی زیر استفاده کنید، یا اگر شناسه یک معامله را دارید "
+            "مستقیم همان را برایم بفرستید (مثال: `DEV-2508-1234`).",
+            parse_mode="Markdown",
+            reply_markup=kb.get_main_menu(is_admin)
+        )

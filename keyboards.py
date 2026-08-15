@@ -152,6 +152,12 @@ def get_contract_action_keyboard(contract_id: str, user_role: str, status: str, 
     markup.add(InlineKeyboardButton("📥 دریافت فایل PDF", callback_data=f"get_pdf_{contract_id}"))
     return markup
 
+def get_more_contracts_inline(next_offset: int) -> InlineKeyboardMarkup:
+    """دکمه نمایش صفحه بعدی معاملات کاربر"""
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("نمایش معاملات بعدی ▶️", callback_data=f"contracts_more_{next_offset}"))
+    return markup
+
 def get_milestones_inline(contract_id: str, milestones: list, is_employer: bool) -> InlineKeyboardMarkup:
     """دکمه‌های آزادسازی مراحل پرداخت"""
     markup = InlineKeyboardMarkup(row_width=1)
