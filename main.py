@@ -1,96 +1,87 @@
-import os
-import sys
-import time
-import signal
 import logging
-from telebot import TeleBot
-
-# بارگذاری ماژول‌های داخلی پروژه می‌انجی
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 from config import config
-from keep_alive import keep_alive
-import database as db
-
-# ایمپورت مستقیم هندلرهای کاربر و ادمین
-from user import register_user_handlers
-from admin import register_admin_handlers
+from database import db
 
 # ----------------------------------------------------
-# پیکربندی سیستم لاگینگ (Logging)
+# تنظیمات لاگینگ سیستم
 # ----------------------------------------------------
 logging.basicConfig(
-    level=logging.INFO if not getattr(config, 'DEBUG', False) else logging.DEBUG,
-    format="%(asctime)s - [%(levelname)s] - %(name)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
+logger = logging.getLogger("Miyanji_Bot")
 
-logger = logging.getLogger("Miyanji_Main")
+# ----------------------------------------------------
+# هندلرهای اصلی دستورات
+# ----------------------------------------------------
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور /start: ثبت‌نام یا بروزرسانی کاربر و ارسال پیام خوش‌آمدگویی"""
+    user = update.effective_user
+    if not user:
+        return
 
-def main():
-    """نقطه ورود اصلی اجرای پلتفرم واسطه‌گری و داوری آنلاین می‌انجی"""
-    logger.info("=== در حال راه‌اندازی سامانه حقوقی و واسطه‌گری می‌انجی ===")
+    # ثبت یا بروزرسانی کاربر در دیتابیس Supabase
+    db.register_or_update_user(
+        user_id=user.id,
+        username=user.username or "",
+        first_name=user.first_name or "کاربر"
+    )
 
-    # ۱. بررسی صحت توکن ربات
+    welcome_text = (
+        f"سلام {user.first_name} عزیز! 👋\n\n"
+        f"به ربات مدیریت معاملات و قراردادهای **میانجی** خوش آمدید.\n"
+        f"سیستم آماده ارائه خدمات امنیتی و حقوقی به شماست."
+    )
+    
+    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور /help: راهنمای استفاده از ربات"""
+    help_text = (
+        "📌 **راهنمای ربات میانجی**\n\n"
+        "🔹 /start - شروع مجدد ربات و مشاهده پنل اصلی\n"
+        "🔹 /help - دریافت راهنمای کامل استفاده از سیستم\n"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+# ----------------------------------------------------
+# تابع اصلی اجرای ربات (Main Entry Point)
+# ----------------------------------------------------
+def main() -> None:
+    """راه‌اندازی کلاینت ربات و اضافه کردن هندلرها"""
     if not config.BOT_TOKEN:
-        logger.critical("خطای بحرانی: BOT_TOKEN در فایل کانفیگ یا متغیرهای محیطی Render تعریف نشده است!")
-        sys.exit(1)
+        logger.error("خطا: BOT_TOKEN در فایل کانفیگ یا متغیرهای محیطی یافت نشد.")
+        return
 
-    # ۲. ایجاد نمونه اصلی TeleBot
-    bot = TeleBot(token=config.BOT_TOKEN, parse_mode=None)
+    # ایجاد شیء اصلی برنامه
+    app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
-    # ۳. روشن کردن سرور نگهدارنده (Keep Alive) جهت زنده نگه داشتن ربات روی Render
-    try:
-        keep_alive()
-        logger.info(f"سرور وب زنده نگه‌دارنده (Keep Alive) روی پورت {getattr(config, 'PORT', 8080)} با موفقیت فعال شد.")
-    except Exception as e:
-        logger.error(f"هشدار در راه‌اندازی سرور وب Keep Alive: {e}")
+    # ۱. تعریف ConversationHandler جهت مدیریت جریان‌های چندمرحله‌ای
+    sample_conversation = ConversationHandler(
+        entry_points=[CommandHandler("start", start_command)],
+        states={},
+        fallbacks=[CommandHandler("help", help_command)],
+        per_message=False  # جلوگیری از هشدار PTBUserWarning
+    )
 
-    # ۴. ثبت تمامی هندلرهای کاربر و ادمین به صورت مستقیم
-    try:
-        register_user_handlers(bot)
-        register_admin_handlers(bot)
-        logger.info("تمامی هندلرهای کاربر، ثبت معامله یکجا، کیف پول و داوری ادمین ثبت شدند.")
-    except Exception as e:
-        logger.critical(f"خطای بحرانی در ثبت هندلرها: {e}")
-        sys.exit(1)
+    # ۲. ثبت هندلرهای دستورات و مکالمات در برنامه
+    app.add_handler(sample_conversation)
+    app.add_handler(CommandHandler("help", help_command))
 
-    # ۵. مدیریت سیگنال‌های خروج جهت بستن تمیز ربات در سرویس‌های ابری
-    def signal_handler(sig, frame):
-        logger.info("سیگنال توقف (Termination) دریافت شد. در حال بستن اتصالات ربات...")
-        try:
-            bot.stop_polling()
-        except Exception:
-            pass
-        logger.info("ربات می‌انجی با موفقیت متوقف شد.")
-        sys.exit(0)
+    logger.info("ربات میانجی با موفقیت مقداردهی شد و آماده دریافت دستورات است...")
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # ۳. شروع دریافت پیام‌ها از سرورهای تلگرام (Polling)
+    app.run_polling(drop_pending_updates=True)
 
-    # ۶. پاک‌سازی وب‌هوک و آپدیت‌های تلنبار شده در زمان خاموشی
-    try:
-        bot.delete_webhook(drop_pending_updates=True)
-        logger.info("آپدیت‌های معوقه و وب‌هوک‌های قبلی با موفقیت پاک‌سازی شدند.")
-    except Exception as e:
-        logger.warning(f"هشدار در پاک‌سازی آپدیت‌های معوقه: {e}")
-
-    # ۷. اجرای حلقه اصلی ربات با قابلیت بازیابی خودکار (Auto-Reconnect)
-    logger.info("🚀 ربات می‌انجی با موفقیت لایو شد و آماده ارائه خدمات است.")
-
-    while True:
-        try:
-            bot.polling(
-                non_stop=True,
-                interval=1,
-                timeout=60,
-                long_polling_timeout=60,
-                skip_pending=True
-            )
-        except Exception as e:
-            logger.error(f"خطا در شبکه یا حلقه Polling ربات: {e}")
-            logger.info("در حال تلاش مجدد برای اتصال پس از ۵ ثانیه...")
-            time.sleep(5)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

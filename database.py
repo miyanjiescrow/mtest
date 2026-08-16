@@ -1,5 +1,6 @@
 import logging
 import threading
+import sqlite3
 from typing import Dict, Any, Optional, List, Union
 from supabase import create_client, Client
 from config import config
@@ -9,10 +10,14 @@ logger = logging.getLogger("Miyanji_Database")
 # قفل Thread جهت جلوگیری از Race Condition
 db_lock = threading.Lock()
 
-# ایجاد کلاینت اتصال به Supabase
+# ایجاد کلاینت اتصال به Supabase (سازگار با نسخه جدید و بدون پارامترهای تداخل‌زا)
+supabase: Optional[Client] = None
 try:
-    supabase: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
-    logger.info("اتصال به Supabase با موفقیت برقرار شد.")
+    if config.SUPABASE_URL and config.SUPABASE_KEY:
+        supabase = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+        logger.info("اتصال به Supabase با موفقیت برقرار شد.")
+    else:
+        logger.warning("اطلاعات SUPABASE_URL یا SUPABASE_KEY تنظیم نشده است.")
 except Exception as e:
     logger.error(f"خطا در اتصال به Supabase: {e}")
     supabase = None
@@ -223,8 +228,8 @@ def create_contract(
             "deadline": int(contract_data.get("deadline", 1)),
             "category": str(contract_data.get("category", "GEN")),
             "status": str(contract_data.get("status", "draft")),
-            "signed_by_second_party": False,  # آیا نفر دوم امضا کرده است؟
-            "free_edits_left": int(contract_data.get("free_edits_left", 3)), # ۳ بار ویرایش رایگان پیش‌فرض
+            "signed_by_second_party": False,
+            "free_edits_left": int(contract_data.get("free_edits_left", 3)),
             "project_file_id": contract_data.get("project_file_id")
         }
 
@@ -322,7 +327,7 @@ def use_free_edit(contract_id: str) -> bool:
     
     edits_left = contract.get("free_edits_left", 0)
     if edits_left <= 0:
-        return False  # ویرایش مجانی تمام شده است
+        return False
         
     return update_contract(contract_id, {"free_edits_left": edits_left - 1})
 
@@ -399,11 +404,10 @@ def submit_receipt(contract_id: str, user_id: int, photo_file_id: str) -> Option
             "contract_id": contract_id,
             "user_id": user_id,
             "photo_file_id": photo_file_id,
-            "status": "pending",  # pending, approved, rejected
+            "status": "pending",
             "rejection_reason": None
         }
         res = supabase.table("receipts").insert(payload).execute()
-        # به‌روزرسانی وضعیت قرارداد به در انتظار پرداخت
         update_contract(contract_id, "Awaiting_Payment")
         return res.data[0] if res.data else None
     except Exception as e:
@@ -421,7 +425,6 @@ def review_receipt(receipt_id: str, status: str, rejection_reason: Optional[str]
             
         res = supabase.table("receipts").update(payload).eq("id", receipt_id).execute()
         
-        # اگر فیش تایید شد، وضعیت قرارداد به حالت امن (Escrow_Locked) تغییر کند
         if status == "approved" and res.data:
             contract_id = res.data[0].get("contract_id")
             update_contract(contract_id, "Escrow_Locked")
@@ -482,6 +485,7 @@ def get_contract_templates() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"خطا در دریافت قالب‌های آماده: {e}")
         return []
+
 # ====================================================
 # ۷. سیستم گزارش‌گیری، آمار و پنل مدیریت (Admin Analytics)
 # ====================================================
@@ -494,11 +498,9 @@ def get_platform_analytics() -> Dict[str, Any]:
         total_users = supabase.table("users").select("user_id", count="exact").execute().count or 0
         total_contracts = supabase.table("contracts").select("id", count="exact").execute().count or 0
         
-        # محاسبه مجموع مبالغ معاملات موفق
         completed_contracts = supabase.table("contracts").select("amount").eq("status", "completed").execute()
         total_volume = sum([float(c.get("amount", 0)) for c in (completed_contracts.data or [])])
         
-        # تعداد اختلافات فعال
         active_disputes = supabase.table("disputes").select("id", count="exact").eq("status", "open").execute().count or 0
 
         return {
@@ -553,7 +555,6 @@ def add_user_rating(
         }
         supabase.table("ratings").insert(payload).execute()
         
-        # بروزرسانی میانگین امتیاز کاربر مقصد
         _recalculate_user_rating(target_user_id)
         return True
     except Exception as e:
@@ -631,3 +632,112 @@ def get_user_transactions(user_id: int, limit: int = 20) -> List[Dict[str, Any]]
     except Exception as e:
         logger.error(f"خطا در دریافت تراکنش‌های کاربر {user_id}: {e}")
         return []
+
+
+# ====================================================
+# ۱۱. مدیریت دیتابیس محلی (SQLite) و کلاس کلاسیک DB
+# ====================================================
+
+def init_db():
+    conn = sqlite3.connect('miyanji.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            full_name TEXT,
+            phone_number TEXT,
+            role TEXT
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS projects (
+            project_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            employer_id INTEGER,
+            freelancer_id INTEGER,
+            title TEXT,
+            amount REAL,
+            status TEXT DEFAULT 'pending',
+            is_locked INTEGER DEFAULT 0,
+            receipt_file_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+def update_project_status(project_id, status):
+    """تغییر وضعیت پروژه (در صورتی که قفل نشده باشد)"""
+    conn = sqlite3.connect('miyanji.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT is_locked FROM projects WHERE project_id = ?', (project_id,))
+    res = cursor.fetchone()
+    if res and res[0] == 1:
+        conn.close()
+        return False
+
+    cursor.execute('UPDATE projects SET status = ? WHERE project_id = ?', (status, project_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def lock_project(project_id, final_status='completed'):
+    """قفل کردن قطعی پروژه جهت جلوگیری از هرگونه تغییر وضعیت بعدی"""
+    conn = sqlite3.connect('miyanji.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE projects 
+        SET is_locked = 1, status = ? 
+        WHERE project_id = ?
+    ''', (final_status, project_id))
+    conn.commit()
+    conn.close()
+
+
+def save_receipt(project_id, file_id):
+    """ثبت آیدی عکس فیش واریزی"""
+    conn = sqlite3.connect('miyanji.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE projects 
+        SET receipt_file_id = ?, status = 'pending_receipt' 
+        WHERE project_id = ? AND is_locked = 0
+    ''', (file_id, project_id))
+    conn.commit()
+    conn.close()
+
+
+def get_project(project_id):
+    """دریافت اطلاعات کامل یک پروژه"""
+    conn = sqlite3.connect('miyanji.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM projects WHERE project_id = ?', (project_id,))
+    project = cursor.fetchone()
+    conn.close()
+    return project
+
+
+# ====================================================
+# ۱۲. کلاس پوششی (Wrapper Class) برای سازگاری با from database import db
+# ====================================================
+
+class Database:
+    """کلاس نمادین جهت ایجاد شیء db و پاسخگویی به فراخوانی‌های مستقیم از فایل‌های دیگر"""
+    def __init__(self):
+        self.init_db = init_db
+        self.register_or_update_user = register_or_update_user
+        self.get_user = get_user
+        self.update_wallet_balance = update_wallet_balance
+        self.create_contract = create_contract
+        self.get_contract = get_contract
+        self.update_contract = update_contract
+        self.get_project = get_project
+        self.lock_project = lock_project
+        self.update_project_status = update_project_status
+
+# نمونه متغیر db جهت ایمپورت شدن در فایل‌های دیگر
+db = Database()
