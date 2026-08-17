@@ -49,12 +49,20 @@ except Exception as e:
 
 try:
     import arabic_reshaper
-    from bidi.algorithm import get_display
+    # نسخه‌های جدید python-bidi (>=0.5) ماژول bidi.algorithm را حذف کرده‌اند و
+    # get_display باید از سطح بالای پکیج ایمپورت شود. علت اصلی نمایش نادرست
+    # متن فارسی در PDF همین مورد بود: چون ایمپورت قدیمی با خطا مواجه می‌شد،
+    # RESHAPE_AVAILABLE همیشه False می‌ماند و متن فارسی بدون شکل‌دهی حروف و
+    # بدون راست‌به‌چپ‌سازی رندر می‌شد.
+    try:
+        from bidi import get_display  # python-bidi >= 0.5
+    except ImportError:
+        from bidi.algorithm import get_display  # python-bidi < 0.5
     RESHAPE_AVAILABLE = True
-except Exception:
+except Exception as e:
     RESHAPE_AVAILABLE = False
     logger.warning(
-        "کتابخانه‌های arabic_reshaper / python-bidi نصب نیستند. "
+        f"کتابخانه‌های arabic_reshaper / python-bidi به‌درستی بارگذاری نشدند ({e}). "
         "به requirements.txt اضافه و نصب کنید تا متن فارسی درست نمایش داده شود."
     )
 

@@ -1,131 +1,14 @@
-from telegram import Update
-from telegram.ext import ContextTypes, ConversationHandler
-import database as db
-import keyboards as kb
-
-# تعریف حالت‌های مکالمه برای دریافت فیش یا پیام داوری
-RECEIVING_RECEIPT, RECEIVING_DISPUTE_MSG = range(2)
-
-# --- ۱. مدیریت ارسال فیش واریزی توسط کارفرما ---
-
-async def handle_send_receipt_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    project_id = int(query.data.split("_")[-1])
-    project = db.get_project(project_id)
-
-    # بررسی شرط قفل بودن
-    if project and project[6] == 1: # ستون is_locked
-        await query.edit_message_text("⚠️ این پروژه قبلاً قطعی و قفل شده است و امکان ارسال فیش وجود ندارد.")
-        return ConversationHandler.END
-
-    context.user_data['active_project_id'] = project_id
-    await query.message.reply_text("لطفاً تصویر فیش واریزی خود را ارسال کنید:")
-    return RECEIVING_RECEIPT
-
-
-async def receive_receipt_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    photo_file = update.message.photo[-1]
-    file_id = photo_file.file_id
-    project_id = context.user_data.get('active_project_id')
-
-    # ذخیره آیدی فایل فیش در دیتابیس
-    db.save_receipt(project_id, file_id)
-    project = db.get_project(project_id)
-
-    await update.message.reply_text("✅ فیش واریزی شما ثبت شد و برای بررسی ادمین ارسال گردید.")
-
-    # ارسال تصویر فیش برای ادمین جهت تایید
-    ADMIN_CHAT_ID = context.bot_data.get("admin_id") # یا آیدی عددی ادمین
-    if ADMIN_CHAT_ID:
-        caption = f"🧾 **فیش واریزی جدید**\nکد پروژه: #{project_id}\nعنوان: {project[3]}\nمبلغ: {project[4]}"
-        await context.bot.send_photo(
-            chat_id=ADMIN_CHAT_ID,
-            photo=file_id,
-            caption=caption,
-            reply_markup=kb.get_admin_receipt_keyboard(project_id),
-            parse_mode="Markdown"
-        )
-    return ConversationHandler.END
-
-
-# --- ۲. تایید و قفل نهایی پروژه توسط کارفرما ---
-
-async def approve_project_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    project_id = int(query.data.split("_")[-1])
-    project = db.get_project(project_id)
-
-    # چک کردن قفل سخت‌افزاری
-    if project and project[6] == 1:
-        await query.edit_message_text("⚠️ این پروژه قبلاً قفل و تسویه شده است. امکان هیچ‌گونه تغییر وضعیت دیگری وجود ندارد.")
-        return
-
-    # قفل کردن پروژه در دیتابیس
-    db.lock_project(project_id, final_status='completed')
-
-    # به روزرسانی کیبورد و پیام
-    await query.edit_message_text(
-        f"✅ پروژه #{project_id} با موفقیت تایید و تسویه شد.\n🔒 **وضعیت:** این پروژه قفل شد و پرونده آن بسته شد.",
-        reply_markup=kb.get_employer_project_keyboard(project_id, is_locked=True)
-    )
-
-    # اطلاع‌رسانی به مجری
-    freelancer_id = project[2]
-    await context.bot.send_message(
-        chat_id=freelancer_id,
-        text=f"🎉 **پروژه #{project_id} توسط کارفرما تایید شد!**\nمبلغ به حساب شما آزاد شد."
-    )
-
-
-# --- ۳. درخواست حل اختلاف / داوری ---
-
-async def dispute_project_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    project_id = int(query.data.split("_")[-1])
-    project = db.get_project(project_id)
-
-    if project and project[6] == 1:
-        await query.answer("⚠️ این پروژه قفل شده است و امکان ثبت شکایت وجود ندارد.", show_alert=True)
-        return
-
-    # تغییر وضعیت به disputed بدون قفل کامل تا زمان صدور رای
-    db.update_project_status(project_id, 'disputed')
-
-    await query.edit_message_text(f"⚖️ درخواست داوری برای پروژه #{project_id} ثبت شد. کارشناسان ما به زودی پرونده را بررسی می‌کنند.")
-
-    # ارسال به پنل ادمین جهت داوری
-    ADMIN_CHAT_ID = context.bot_data.get("admin_id")
-    if ADMIN_CHAT_ID:
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=f"🚨 **درخواست حل اختلاف (داوری)**\nپروژه: #{project_id}\nعنوان: {project[3]}\nطرفین در انتظار بررسی هستند.",
-            reply_markup=kb.get_admin_dispute_keyboard(project_id)
-        )
-
-
-# --- ۴. تصمیم‌گیری ادمین در داوری و قفل قطعی ---
-
-async def admin_dispute_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    action = query.data
-    project_id = int(action.split("_")[-1])
-
-    if "pay_freelancer" in action:
-        db.lock_project(project_id, final_status='completed_by_admin')
-        text = f"⚖️ **رای داوری صدور شد:** وجه پروژه #{project_id} به نفع مجری آزاد و پروژه قفل شد."
-    elif "refund_employer" in action:
-        db.lock_project(project_id, final_status='refunded_by_admin')
-        text = f"⚖️ **رای داوری صدور شد:** وجه پروژه #{project_id} به کارفرما عودت داده شد و پروژه قفل شد."
-
-    await query.edit_message_text(text)
+# ====================================================
+# ⚠️ توجه مهم (بازبینی معماری - مرداد ۱۴۰۵):
+# این فایل با user.py/admin.py هندلرهای مشترک و همپوشان زیادی داشت (ویرایش
+# پیش‌نویس، امضا، چانه‌زنی، تحویل، دریافت PDF و ...). چون main.py اصلاً هیچ‌کدام
+# از register_all_handlers/register_user_handlers/register_admin_handlers را
+# صدا نمی‌زد، این تناقض تا امروز بی‌اثر بود. اکنون که main.py درست شده،
+# register_all_handlers دیگر در main.py فراخوانی نمی‌شود؛ نسخهٔ کامل‌تر و
+# اصلاح‌شدهٔ همهٔ این قابلیت‌ها (به‌همراه بخش‌هایی که فقط همین‌جا بودند -
+# ارسال/تایید فیش واریزی و رد پروژه) به‌طور کامل در user.py منتقل شده است.
+# این فایل صرفاً برای مرجع/تاریخچه نگه داشته شده و از نو نیازی به import آن نیست.
+# ====================================================
 import logging
 import uuid
 from telebot import TeleBot

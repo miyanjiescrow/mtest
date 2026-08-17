@@ -84,15 +84,19 @@ def register_admin_handlers(bot: TeleBot):
     # ====================================================
     # ۳. تایید یا رد فیش‌های واریزی کارفرمایان توسط ادمین
     # ====================================================
-    @bot.callback_query_handler(func=lambda call: call.data.startswith(("admin_approve_receipt_", "admin_reject_receipt_")))
+    @bot.callback_query_handler(func=lambda call: call.data.startswith(("receipt_approve_", "receipt_reject_")))
     def handle_receipt_approval(call: CallbackQuery):
         if not is_admin(call.from_user.id):
             bot.answer_callback_query(call.id, "❌ عدم دسترسی", show_alert=True)
             return
 
-        is_approve = call.data.startswith("admin_approve_receipt_")
-        prefix = "admin_approve_receipt_" if is_approve else "admin_reject_receipt_"
-        cid = call.data.replace(prefix, "")
+        is_approve = call.data.startswith("receipt_approve_")
+        prefix = "receipt_approve_" if is_approve else "receipt_reject_"
+        # قالب دکمه: receipt_approve_{contract_id}_{buyer_id} → buyer_id همیشه بعد از آخرین "_" است
+        payload = call.data.replace(prefix, "", 1)
+        cid, _, _buyer_id_str = payload.rpartition("_")
+        if not cid:
+            cid = payload  # اطمینان در صورت نبود buyer_id در payload
 
         contract = db.get_contract(cid)
         if not contract:
@@ -102,7 +106,8 @@ def register_admin_handlers(bot: TeleBot):
         buyer_id = contract.get("buyer_id") or contract.get("employer_id")
 
         if is_approve:
-            db.update_contract(cid, {"status": "in_progress", "payment_verified": True})
+            # وضعیت «active» تا مجری بتواند دکمهٔ «تحویل پروژه» را ببیند (سازگار با keyboards.py)
+            db.update_contract(cid, {"status": "active", "payment_verified": True})
             bot.answer_callback_query(call.id, "✅ فیش تایید گردید.")
             
             bot.edit_message_caption(
@@ -385,7 +390,8 @@ def register_admin_handlers(bot: TeleBot):
 
         if step == "WAITING_FOR_RECEIPT_REJECT_REASON":
             buyer_id = state.get("buyer_id")
-            db.update_contract(cid, {"status": "receipt_rejected"})
+            # به awaiting_payment برمی‌گردد تا دکمهٔ «ارسال فیش واریزی» دوباره برای کارفرما نمایش داده شود
+            db.update_contract(cid, {"status": "awaiting_payment"})
 
             bot.send_message(message.chat.id, f"✅ علت رد فیش ثبت شد و برای خریدار ارسال گردید.")
 

@@ -699,33 +699,161 @@ def register_user_handlers(bot: TeleBot):
             bot.answer_callback_query(call.id, "❌ معامله یافت نشد.", show_alert=True)
             return
 
-        updates = {"status": "active"}
         # اگر امضاکننده هنوز نقشی در معامله ندارد، جای خالی (خریدار/فروشنده) را پر می‌کنیم
+        updates = {}
         if not contract.get("buyer_id") and contract.get("seller_id") != user_id:
             updates["buyer_id"] = user_id
         elif not contract.get("seller_id") and contract.get("buyer_id") != user_id:
             updates["seller_id"] = user_id
 
-        db.update_contract(cid, updates)
         contract.update(updates)  # به‌روزرسانی محلی جهت تصمیم‌گیری فوری در همین تابع
+        both_signed = bool(contract.get("buyer_id") and contract.get("seller_id"))
 
-        bot.answer_callback_query(call.id, "✅ معامله با موفقیت تایید و فعال شد.")
-        bot.send_message(
-            call.message.chat.id,
-            f"🎉 معامله شماره `{cid}` با موفقیت امضا شد و وارد مرحله اجرا گردید.",
-            parse_mode="Markdown"
-        )
+        # نکتهٔ امانی مهم: امضای هر دو طرف به‌معنای فعال‌شدن فوری پروژه نیست.
+        # تا زمانی‌که کارفرما فیش واریزی را ارسال نکند و ادمین آن را تایید نکند،
+        # وجه امانت هنوز بلوکه نشده و مجری نباید کار را شروع کند. پس وضعیت را
+        # به «awaiting_payment» می‌بریم، نه مستقیم «active».
+        updates["status"] = "awaiting_payment" if both_signed else contract.get("status", "pending_approval")
+        db.update_contract(cid, updates)
+        contract.update(updates)
 
-        if contract.get("buyer_id") and contract.get("seller_id"):
-            # هر دو طرف امضا کرده‌اند → تولید و ارسال خودکار سند رسمی PDF فارسی برای هر دو نفر
+        bot.answer_callback_query(call.id, "✅ قرارداد با موفقیت امضا شد.")
+
+        if both_signed:
+            bot.send_message(
+                call.message.chat.id,
+                f"🎉 معامله شماره `{cid}` توسط هر دو طرف امضا شد.\n"
+                "💳 کارفرمای محترم، لطفاً جهت بلوکه‌شدن امانی وجه، از «📜 معاملات من» فیش واریزی را ارسال کنید.",
+                parse_mode="Markdown"
+            )
+            # سند رسمی امضاشده (مستقل از وضعیت پرداخت) برای هر دو طرف ارسال می‌شود
             send_contract_pdf_to_parties(bot, contract)
         else:
+            bot.send_message(
+                call.message.chat.id,
+                f"✍️ امضای شما برای معامله شماره `{cid}` ثبت شد. منتظر امضای طرف مقابل بمانید.",
+                parse_mode="Markdown"
+            )
             # فقط یک طرف امضا کرده؛ طرف مقابل مطلع می‌شود که باید بیاید و تایید کند
             notify_other_party(
                 bot, contract, user_id,
                 f"✍️ طرف مقابل معامله شماره `{cid}` را امضا کرد.\n"
                 "برای مشاهده و تایید نهایی، از «📜 معاملات من» وارد شوید."
             )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("upload_receipt_"))
+    def handle_upload_receipt_start(call: CallbackQuery):
+        """شروع مرحلهٔ ارسال فیش واریزی توسط کارفرما (بخشی که قبلاً هیچ هندلری نداشت)"""
+        cid = call.data.replace("upload_receipt_", "", 1)
+        contract = db.get_contract(cid)
+        if not contract:
+            bot.answer_callback_query(call.id, "❌ معامله یافت نشد.", show_alert=True)
+            return
+
+        user_id = call.from_user.id
+        buyer_id = contract.get("buyer_id") or contract.get("employer_id")
+        if buyer_id != user_id:
+            bot.answer_callback_query(call.id, "❌ فقط کارفرمای معامله می‌تواند فیش واریزی ارسال کند.", show_alert=True)
+            return
+
+        db.set_user_state(user_id, "WAITING_RECEIPT_PHOTO", {"receipt_cid": cid})
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            f"📸 لطفاً تصویر فیش واریزی مربوط به معامله `{cid}` را ارسال فرمایید:",
+            parse_mode="Markdown",
+            reply_markup=kb.get_cancel_keyboard()
+        )
+
+    @bot.message_handler(
+        content_types=['photo', 'document'],
+        func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_RECEIPT_PHOTO"
+    )
+    def handle_receipt_photo(message: Message):
+        """دریافت تصویر فیش واریزی و ارسال آن برای تایید ادمین"""
+        user_id = message.from_user.id
+        _, data = db.get_user_state(user_id)
+        cid = data.get("receipt_cid") if isinstance(data, dict) else None
+        is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
+
+        if not cid:
+            db.clear_user_state(user_id)
+            bot.send_message(message.chat.id, "⚠️ خطایی رخ داد، لطفاً دوباره تلاش کنید.", reply_markup=kb.get_main_menu(is_admin))
+            return
+
+        file_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
+        if not file_id:
+            bot.send_message(message.chat.id, "⚠️ لطفاً فقط تصویر یا فایل فیش واریزی را ارسال کنید.")
+            return
+
+        db.update_contract(cid, {"receipt_file_id": file_id, "status": "awaiting_receipt_approval"})
+        db.clear_user_state(user_id)
+
+        for admin_id in getattr(config, 'ADMIN_IDS', []):
+            try:
+                bot.send_photo(
+                    admin_id,
+                    photo=file_id,
+                    caption=f"💳 **فیش واریزی جدید**\n\n📌 **کد معامله:** `{cid}`\n👤 **کارفرما:** `{user_id}`",
+                    parse_mode="Markdown",
+                    reply_markup=kb.get_receipt_admin_approval_inline(cid, user_id)
+                )
+            except Exception as e:
+                logger.error(f"خطا در ارسال فیش به ادمین {admin_id}: {e}")
+
+        bot.send_message(
+            message.chat.id,
+            "✅ **فیش واریزی شما دریافت شد و جهت تایید برای مدیریت ارسال گردید.**",
+            reply_markup=kb.get_main_menu(is_admin)
+        )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("reject_project_"))
+    def handle_reject_project_start(call: CallbackQuery):
+        """شروع مرحلهٔ ثبت دلیل عدم تایید پروژه توسط کارفرما (بخشی که قبلاً هیچ هندلری نداشت)"""
+        cid = call.data.replace("reject_project_", "", 1)
+        contract = db.get_contract(cid)
+        if not contract:
+            bot.answer_callback_query(call.id, "❌ معامله یافت نشد.", show_alert=True)
+            return
+
+        db.set_user_state(call.from_user.id, "WAITING_PROJECT_REJECT_REASON", {"reject_cid": cid})
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            f"⚠️ لطفاً **علت عدم تایید و موارد نیازمند اصلاح** برای معامله `{cid}` را بنویسید:",
+            parse_mode="Markdown",
+            reply_markup=kb.get_cancel_keyboard()
+        )
+
+    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_PROJECT_REJECT_REASON")
+    def handle_reject_project_reason(message: Message):
+        user_id = message.from_user.id
+        _, data = db.get_user_state(user_id)
+        cid = data.get("reject_cid") if isinstance(data, dict) else None
+        is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
+
+        if not cid:
+            db.clear_user_state(user_id)
+            bot.send_message(message.chat.id, "⚠️ خطایی رخ داد، لطفاً دوباره تلاش کنید.", reply_markup=kb.get_main_menu(is_admin))
+            return
+
+        contract = db.get_contract(cid)
+        seller_id = contract.get("seller_id") or contract.get("freelancer_id") if contract else None
+        free_edits_left = max(0, (contract.get("free_edits_left", 3) if contract else 3) - 1)
+        reason = message.text.strip()
+
+        # پروژه به وضعیت «در حال اجرا» برمی‌گردد تا مجری بتواند دوباره تحویل دهد
+        db.update_contract(cid, {"status": "active", "free_edits_left": free_edits_left})
+        db.clear_user_state(user_id)
+
+        bot.send_message(message.chat.id, "✅ موارد اصلاحی ثبت و به مجری ابلاغ گردید.", reply_markup=kb.get_main_menu(is_admin))
+
+        if seller_id:
+            try:
+                rejection_msg = utils.format_project_rejection_msg(cid, reason, free_edits_left)
+                bot.send_message(seller_id, rejection_msg, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"خطا در ارسال پیام رد پروژه به مجری: {e}")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("bargain_"))
     def handle_bargain_start(call: CallbackQuery):
